@@ -2,18 +2,22 @@ package main
 
 import (
 	"fmt"
+	"image/color"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"syscall"
 
+	"fyne.io/fyne"
 	"fyne.io/fyne/app"
+	"fyne.io/fyne/canvas"
 	"fyne.io/fyne/container"
+	"fyne.io/fyne/theme"
 	"fyne.io/fyne/widget"
 )
 
-const CWD string = "~/github"
+const CWD string = "/Users"
 
 type block struct {
 	title string
@@ -22,12 +26,18 @@ type block struct {
 }
 
 func accessibleEntry(relPath string) bool {
-	return syscall.Access(relPath, syscall.O_RDONLY) == nil
+	if _, err := os.Stat(relPath); os.IsNotExist(err) ||
+		syscall.Access(relPath, syscall.O_RDONLY) != nil ||
+		!strings.Contains(relPath, string(os.PathSeparator)) {
+		return false
+	}
+	return true
+
 }
 
-func listRawFiles(relPath string) string {
+func listRawFiles(relPath string) (string, error) {
 	if !accessibleEntry(relPath) {
-		return os.DevNull
+		return "", fmt.Errorf("Not found baby!!!")
 	}
 
 	lsBinaries, _ := exec.LookPath("ls")
@@ -37,15 +47,16 @@ func listRawFiles(relPath string) string {
 		stdout, _ := exec.Command(lsBinaries, args...).Output()
 		c <- string(stdout)
 	}(lsArgs, consumer)
-	return <-consumer
+	return <-consumer, nil
 }
 
 func convertToTreeMap(raw string) map[int]block {
-	if !strings.Contains(raw, "\n") {
-		return map[int]block{}
+	blockMap := make(map[int]block)
+	if raw == "" || !strings.Contains(raw, "\n") {
+		blockMap[-1] = block{}
+		return blockMap
 	}
 
-	blockMap := make(map[int]block)
 	lines := strings.Split(raw, "\n")
 	for incr, line := range lines[1 : len(lines)-1] {
 		segments := strings.Split(line, " ")
@@ -65,21 +76,34 @@ func convertToTreeMap(raw string) map[int]block {
 }
 
 func main() {
-	files := listRawFiles(CWD)
-	fmt.Printf("%+v", convertToTreeMap(files))
-	blocks := convertToTreeMap(files)
-
 	a := app.New()
 	w := a.NewWindow("TreeMog")
 
-	treeMap := widget.NewLabel("Files")
+	queryBar := widget.NewEntry()
+	queryBar.SetPlaceHolder("Do it...")
+
+	pressSearchFnOnce := func() {
+		files, err := listRawFiles(queryBar.Text)
+		if err != nil {
+			queryBar.SetText("")
+			return
+		}
+		blocks := convertToTreeMap(files)
+		objs := make([]fyne.CanvasObject, 0, len(blocks))
+		for k, b := range blocks {
+			rContent := fmt.Sprintf("%d> %s: %d", k, b.title, b.size)
+			data := canvas.NewText(rContent, color.White)
+			b := canvas.NewLine(color.White)
+			c := container.NewBorder(b /* top */, b /* bot */, nil, nil, data)
+			objs = append(objs, c)
+		}
+		w.SetContent(container.NewVBox(queryBar,
+			container.NewGridWithRows(len(blocks), objs...)))
+	}
+
 	w.SetContent(container.NewVBox(
-		treeMap,
-		widget.NewButton("Click me", func() {
-			for _, b := range blocks {
-				treeMap.SetText(b.title + ": " + strconv.Itoa(int(b.size)))
-			}
-		}),
+		queryBar,
+		widget.NewButtonWithIcon("Query", theme.SearchIcon(), pressSearchFnOnce),
 	))
 
 	w.ShowAndRun()
